@@ -1,26 +1,19 @@
+import json
+import os
 import random
 import tkinter as tk
 
-MAX_LINES = 3
-MAX_BET = 100
-MIN_BET = 1
-
-ROWS = 3
-COLS = 3
-
-symbol_count = {
-    "A": 2,
-    "B": 4,
-    "C": 6,
-    "D": 8,
-}
-
-symbol_value = {
-    "A": 5,
-    "B": 4,
-    "C": 3,
-    "D": 2,
-}
+from logic import (
+    COLS,
+    MAX_BET,
+    MAX_LINES,
+    MIN_BET,
+    ROWS,
+    check_winnings,
+    get_slot_machine_spin,
+    symbol_count,
+    symbol_value,
+)
 
 # How each symbol looks on screen: (glyph, color)
 SYMBOL_STYLE = {
@@ -31,6 +24,9 @@ SYMBOL_STYLE = {
 }
 
 BET_CHIPS = [b for b in (1, 5, 10, 25, 50, 100) if MIN_BET <= b <= MAX_BET]
+
+# Progress is saved next to this file
+SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save.json")
 
 # Colors
 BG = "#1e1b4b"
@@ -48,38 +44,20 @@ RED = "#f87171"
 FONT = "Helvetica"
 
 
-# ---------- game logic (same as the terminal version) ----------
-def check_winnings(columns, lines, bet, values):
-    winnings = 0
-    winning_lines = []
-    for line in range(lines):
-        symbol = columns[0][line]
-        for column in columns:
-            symbol_to_check = column[line]
-            if symbol != symbol_to_check:
-                break
-        else:
-            winnings += values[symbol] * bet
-            winning_lines.append(line + 1)
-    return winnings, winning_lines
-
-
-def get_slot_machine_spin(rows, cols, symbols):
-    all_symbols = []
-    for symbol, count in symbols.items():
-        for _ in range(count):
-            all_symbols.append(symbol)
-
-    columns = []
-    for _ in range(cols):
-        column = []
-        current_symbols = all_symbols[:]
-        for _ in range(rows):
-            value = random.choice(current_symbols)
-            current_symbols.remove(value)
-            column.append(value)
-        columns.append(column)
-    return columns
+# ---------- saved progress ----------
+def load_progress():
+    """Read balance, best win and total spins from save.json (defaults if missing or broken)."""
+    data = {"balance": 0, "best_win": 0, "total_spins": 0}
+    try:
+        with open(SAVE_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+        for key in data:
+            value = saved.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                data[key] = value
+    except (OSError, ValueError, AttributeError):
+        pass  # no save yet, or the file is unreadable: start fresh
+    return data
 
 
 # ---------- GUI ----------
@@ -88,6 +66,11 @@ class SlotApp:
         self.root = root
         self.screen = "deposit"
         self.spinning = False
+
+        progress = load_progress()
+        self.balance = progress["balance"]
+        self.best_win = progress["best_win"]
+        self.total_spins = progress["total_spins"]
 
         root.title("Lucky Slots")
         root.geometry("560x780")
@@ -104,6 +87,18 @@ class SlotApp:
     def clear(self):
         for widget in self.container.winfo_children():
             widget.destroy()
+
+    def save_progress(self):
+        data = {
+            "balance": self.balance,
+            "best_win": self.best_win,
+            "total_spins": self.total_spins,
+        }
+        try:
+            with open(SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except OSError:
+            pass  # saving is a nice-to-have, never crash the game over it
 
     def make_button(self, parent, text, command, color=ACCENT, hover=ACCENT_HOVER):
         # Label-based button so colors work the same on Windows, macOS and Linux
@@ -134,18 +129,38 @@ class SlotApp:
         self.spinning = False
         self.clear()
 
+        has_save = self.balance >= MIN_BET
+
         tk.Label(
             self.container, text="★  ♦  ♠  ♣", font=(FONT, 26, "bold"),
             bg=BG, fg=ACCENT_HOVER,
-        ).pack(pady=(50, 0))
+        ).pack(pady=(30 if has_save else 50, 0))
         tk.Label(
             self.container, text="LUCKY SLOTS", font=(FONT, 34, "bold"),
             bg=BG, fg=GOLD,
         ).pack(pady=(8, 4))
+
+        subtitle = "Match 3 in a row to win."
+        if self.best_win > 0:
+            subtitle += f"\nBest win so far: ${self.best_win}"
         tk.Label(
-            self.container, text="Match 3 in a row to win.\nHow much would you like to deposit?",
-            font=(FONT, 13), bg=BG, fg=MUTED, justify="center",
-        ).pack(pady=(0, 24))
+            self.container, text=subtitle, font=(FONT, 13),
+            bg=BG, fg=MUTED, justify="center",
+        ).pack(pady=(0, 20))
+
+        if has_save:
+            self.make_button(
+                self.container, f"Continue with ${self.balance}", self.continue_game
+            ).pack(pady=(0, 16))
+            tk.Label(
+                self.container, text="or start fresh with a new deposit:",
+                font=(FONT, 12), bg=BG, fg=MUTED,
+            ).pack(pady=(0, 8))
+        else:
+            tk.Label(
+                self.container, text="How much would you like to deposit?",
+                font=(FONT, 12), bg=BG, fg=MUTED,
+            ).pack(pady=(0, 8))
 
         self.deposit_var = tk.StringVar(value="100")
         entry = tk.Entry(
@@ -154,7 +169,8 @@ class SlotApp:
             insertbackground="#1e1b4b", width=10,
         )
         entry.pack(ipady=8)
-        entry.focus_set()
+        if not has_save:
+            entry.focus_set()
         entry.bind("<Return>", lambda e: self.start_game())
 
         quick = tk.Frame(self.container, bg=BG)
@@ -168,7 +184,11 @@ class SlotApp:
         )
         self.deposit_msg.pack()
 
-        self.make_button(self.container, "Start Playing", self.start_game).pack(pady=(6, 0))
+        self.make_button(
+            self.container, "Start Fresh" if has_save else "Start Playing", self.start_game,
+            color="#4b4785" if has_save else ACCENT,
+            hover="#5f5aa0" if has_save else ACCENT_HOVER,
+        ).pack(pady=(6, 0))
 
     def start_game(self):
         text = self.deposit_var.get().strip()
@@ -181,8 +201,13 @@ class SlotApp:
             return
 
         self.balance = amount
-        self.spins = 0
-        self.biggest_win = 0
+        self.save_progress()
+        self.begin_session()
+
+    def continue_game(self):
+        self.begin_session()
+
+    def begin_session(self):
         self.lines = 1
         self.bet = 5 if 5 in BET_CHIPS else BET_CHIPS[0]
         self.show_game()
@@ -310,7 +335,7 @@ class SlotApp:
         )
 
     def refresh_stats(self):
-        self.stats_label.config(text=f"Spins: {self.spins}   Biggest win: ${self.biggest_win}")
+        self.stats_label.config(text=f"Spins: {self.total_spins}   Best win: ${self.best_win}")
         self.balance_label.config(text=f"${self.balance}")
 
     def set_lines(self, n):
@@ -339,7 +364,8 @@ class SlotApp:
 
         self.spinning = True
         self.balance -= total_bet
-        self.spins += 1
+        self.total_spins += 1
+        self.save_progress()  # the bet is gone as soon as the reels start
         self.refresh_stats()
         self.set_message("Spinning...", MUTED)
         self.spin_btn.config(text="SPINNING...", bg="#4b4785")
@@ -368,7 +394,8 @@ class SlotApp:
     def finish_spin(self):
         winnings, winning_lines = check_winnings(self.result, self.lines, self.bet, symbol_value)
         self.balance += winnings
-        self.biggest_win = max(self.biggest_win, winnings)
+        self.best_win = max(self.best_win, winnings)
+        self.save_progress()
 
         # Highlight winning rows
         for line in winning_lines:
@@ -399,7 +426,8 @@ class SlotApp:
     def cash_out(self):
         if self.spinning:
             return
-        self.show_deposit(f"You cashed out with ${self.balance}. Thanks for playing!", GREEN)
+        self.save_progress()
+        self.show_deposit(f"You cashed out with ${self.balance}. Your balance is saved.", GREEN)
 
 
 if __name__ == "__main__":
